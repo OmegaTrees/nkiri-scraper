@@ -117,30 +117,44 @@ class DramaEpisodeScraper:
             return {}
     
     def parse_elementor_episodes_by_season(self, soup):
-        """Parse episodes from Elementor structure organized by seasons"""
+        """Parse episodes with proper season detection or smart inference"""
         seasons = {}
-        current_season = "Season 1"  # Default season
-        episode_counter = 1
+        current_season = None
+        detected_season_numbers = []
         
-        # Find all Elementor containers
+        # Find all Elementor containers in order
         containers = soup.find_all('div', class_='elementor-container elementor-column-gap-default')
         
-        for container in containers:
-            # Look for season title first
-            season_element = container.find('h2', class_='elementor-heading-title')
-            if season_element:
-                season_text = season_element.get_text(strip=True)
+        print(f"DEBUG: Processing {len(containers)} containers")
+        
+        for i, container in enumerate(containers):
+            headings = container.find_all('h2', class_='elementor-heading-title')
+            
+            for heading in headings:
+                heading_text = heading.get_text(strip=True)
+                print(f"DEBUG: Container {i}, Heading: '{heading_text}'")
                 
                 # Check if it's a season title
-                if 'season' in season_text.lower():
-                    current_season = season_text
-                    episode_counter = 1  # Reset episode counter for new season
+                season_match = re.search(r'season\s+(\d+)', heading_text, re.IGNORECASE)
+                if season_match:
+                    season_num = int(season_match.group(1))
+                    current_season = heading_text
+                    detected_season_numbers.append(season_num)
+                    
+                    print(f"DEBUG: Found season: {current_season} (number: {season_num})")
+                    
                     if current_season not in seasons:
                         seasons[current_season] = []
-                    continue
                 
                 # Check if it's an episode title
-                elif 'episode' in season_text.lower():
+                elif re.search(r'episode\s+\d+', heading_text, re.IGNORECASE):
+                    print(f"DEBUG: Found episode: {heading_text}")
+                    
+                    # If no explicit season found yet, use smart inference
+                    if current_season is None:
+                        current_season = self.infer_current_season(detected_season_numbers)
+                        print(f"DEBUG: Inferred season: {current_season}")
+                    
                     # Ensure current season exists in dict
                     if current_season not in seasons:
                         seasons[current_season] = []
@@ -150,45 +164,72 @@ class DramaEpisodeScraper:
                     if download_button and download_button.get('href'):
                         download_link = download_button.get('href')
                         
+                        episode_number = len(seasons[current_season]) + 1
+                        
                         seasons[current_season].append({
-                            'number': episode_counter,
-                            'title': season_text,
+                            'number': episode_number,
+                            'title': heading_text,
                             'download_link': download_link,
                             'season': current_season
                         })
-                        episode_counter += 1
+                        print(f"DEBUG: Added episode {episode_number} to {current_season}")
         
-        # If no seasons were found, try alternative parsing
-        if not seasons:
-            seasons = self.parse_episodes_without_seasons(soup)
+        print(f"DEBUG: Detected season numbers: {sorted(set(detected_season_numbers))}")
+        print(f"DEBUG: Final seasons: {list(seasons.keys())}")
+        
+        # Apply your smart inference if we have gaps
+        if detected_season_numbers:
+            seasons = self.apply_smart_inference(seasons, detected_season_numbers)
         
         return seasons
     
-    def parse_episodes_without_seasons(self, soup):
-        """Fallback method when no season structure is found"""
-        seasons = {"Season 1": []}
+    def infer_current_season(self, detected_season_numbers):
+        """Infer what the current season should be"""
+        if not detected_season_numbers:
+            return "Season 1"
         
-        # Find all episode headings
-        episode_headings = soup.find_all('h2', class_='elementor-heading-title')
+        # Use the first detected season as starting point
+        min_season = min(detected_season_numbers)
+        return f"Season {min_season}"
+    
+    def apply_smart_inference(self, seasons, detected_season_numbers):
+        """Apply your smart minus approach to fix missing seasons"""
+        if not detected_season_numbers:
+            return seasons
         
-        episode_counter = 1
-        for heading in episode_headings:
-            title_text = heading.get_text(strip=True)
+        sorted_detected = sorted(set(detected_season_numbers))
+        print(f"DEBUG: Applying smart inference for seasons: {sorted_detected}")
+        
+        # Check if we have gaps in the sequence
+        expected_seasons = list(range(sorted_detected[0], sorted_detected[-1] + 1))
+        missing_seasons = [s for s in expected_seasons if s not in sorted_detected]
+        
+        if missing_seasons:
+            print(f"DEBUG: Missing seasons detected: {missing_seasons}")
             
-            if 'episode' in title_text.lower():
-                parent_container = heading.find_parent('div', class_='elementor-container')
+            # If we have episodes assigned to wrong seasons, try to redistribute
+            new_seasons = {}
+            
+            # Collect all episodes in order they were found
+            all_episodes = []
+            for season_name in seasons:
+                all_episodes.extend(seasons[season_name])
+            
+            # Redistribute to expected seasons
+            episodes_assigned = 0
+            for season_num in expected_seasons:
+                season_name = f"Season {season_num}"
+                new_seasons[season_name] = []
                 
-                if parent_container:
-                    download_button = parent_container.find('a', class_='elementor-button')
-                    
-                    if download_button and download_button.get('href'):
-                        seasons["Season 1"].append({
-                            'number': episode_counter,
-                            'title': title_text,
-                            'download_link': download_button.get('href'),
-                            'season': "Season 1"
-                        })
-                        episode_counter += 1
+                # Find how many episodes this season should have
+                # (We don't assume, we just assign what we found)
+                if season_num in sorted_detected:
+                    original_season_name = f"Season {season_num}"
+                    if original_season_name in seasons:
+                        new_seasons[season_name] = seasons[original_season_name]
+                        episodes_assigned += len(seasons[original_season_name])
+            
+            return new_seasons
         
         return seasons
     
@@ -205,7 +246,10 @@ class DramaEpisodeScraper:
         all_episodes = []
         episode_number = 1
         
-        for season_name, episodes in seasons.items():
+        # Sort seasons by season number for proper display
+        sorted_seasons = self.sort_seasons(seasons)
+        
+        for season_name, episodes in sorted_seasons:
             if episodes:  # Only show seasons that have episodes
                 print(f"\n📺 {season_name}")
                 print("-" * 40)
@@ -218,6 +262,19 @@ class DramaEpisodeScraper:
         
         print("=" * 80)
         return all_episodes
+    
+    def sort_seasons(self, seasons):
+        """Sort seasons by their number"""
+        def extract_season_number(season_name):
+            # Extract number from season name like "Season 3" -> 3
+            match = re.search(r'season\s+(\d+)', season_name, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+            return 999  # Put unrecognized seasons at the end
+        
+        # Sort seasons by their number
+        sorted_items = sorted(seasons.items(), key=lambda x: extract_season_number(x[0]))
+        return sorted_items
     
     def get_episode_choice(self, all_episodes):
         """Get user's choice of episode from all seasons"""
