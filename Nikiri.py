@@ -108,68 +108,129 @@ class DramaEpisodeScraper:
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
-            episodes = self.parse_elementor_episodes(soup)
+            seasons = self.parse_elementor_episodes_by_season(soup)
             
-            return episodes
+            return seasons
             
         except Exception as e:
             print(f"Error scraping episodes: {e}")
-            return []
+            return {}
     
-    def parse_elementor_episodes(self, soup):
-        """Parse episodes from Elementor structure"""
-        episodes = []
+    def parse_elementor_episodes_by_season(self, soup):
+        """Parse episodes from Elementor structure organized by seasons"""
+        seasons = {}
+        current_season = "Season 1"  # Default season
+        episode_counter = 1
         
         # Find all Elementor containers
         containers = soup.find_all('div', class_='elementor-container elementor-column-gap-default')
         
         for container in containers:
-            episode_title = None
-            download_link = None
-            
-            # Look for episode title
-            title_element = container.find('h2', class_='elementor-heading-title')
-            if title_element:
-                episode_title = title_element.get_text(strip=True)
+            # Look for season title first
+            season_element = container.find('h2', class_='elementor-heading-title')
+            if season_element:
+                season_text = season_element.get_text(strip=True)
+                
+                # Check if it's a season title
+                if 'season' in season_text.lower():
+                    current_season = season_text
+                    episode_counter = 1  # Reset episode counter for new season
+                    if current_season not in seasons:
+                        seasons[current_season] = []
+                    continue
                 
                 # Check if it's an episode title
-                if 'episode' in episode_title.lower():
-                    # Look for download button
+                elif 'episode' in season_text.lower():
+                    # Ensure current season exists in dict
+                    if current_season not in seasons:
+                        seasons[current_season] = []
+                    
+                    # Look for download button in the same container
                     download_button = container.find('a', class_='elementor-button')
                     if download_button and download_button.get('href'):
                         download_link = download_button.get('href')
                         
-                        episodes.append({
-                            'number': len(episodes) + 1,
-                            'title': episode_title,
-                            'download_link': download_link
+                        seasons[current_season].append({
+                            'number': episode_counter,
+                            'title': season_text,
+                            'download_link': download_link,
+                            'season': current_season
                         })
+                        episode_counter += 1
         
-        return episodes
+        # If no seasons were found, try alternative parsing
+        if not seasons:
+            seasons = self.parse_episodes_without_seasons(soup)
+        
+        return seasons
     
-    def display_episodes(self, episodes):
-        """Display episodes for user selection"""
-        if not episodes:
+    def parse_episodes_without_seasons(self, soup):
+        """Fallback method when no season structure is found"""
+        seasons = {"Season 1": []}
+        
+        # Find all episode headings
+        episode_headings = soup.find_all('h2', class_='elementor-heading-title')
+        
+        episode_counter = 1
+        for heading in episode_headings:
+            title_text = heading.get_text(strip=True)
+            
+            if 'episode' in title_text.lower():
+                parent_container = heading.find_parent('div', class_='elementor-container')
+                
+                if parent_container:
+                    download_button = parent_container.find('a', class_='elementor-button')
+                    
+                    if download_button and download_button.get('href'):
+                        seasons["Season 1"].append({
+                            'number': episode_counter,
+                            'title': title_text,
+                            'download_link': download_button.get('href'),
+                            'season': "Season 1"
+                        })
+                        episode_counter += 1
+        
+        return seasons
+    
+    def display_seasons_and_episodes(self, seasons):
+        """Display seasons and episodes for user selection"""
+        if not seasons:
             print("No episodes found!")
             return None
-            
-        print(f"\nFound {len(episodes)} episodes:")
-        print("-" * 80)
         
-        for episode in episodes:
-            print(f"{episode['number']}. {episode['title']}")
+        print(f"\nFound {len(seasons)} season(s):")
+        print("=" * 80)
         
-        print("-" * 80)
-        return episodes
+        # Create a flat list for numbering
+        all_episodes = []
+        episode_number = 1
+        
+        for season_name, episodes in seasons.items():
+            if episodes:  # Only show seasons that have episodes
+                print(f"\n📺 {season_name}")
+                print("-" * 40)
+                
+                for episode in episodes:
+                    print(f"  {episode_number}. {episode['title']}")
+                    episode['global_number'] = episode_number
+                    all_episodes.append(episode)
+                    episode_number += 1
+        
+        print("=" * 80)
+        return all_episodes
     
-    def get_episode_choice(self, episodes):
-        """Get user's choice of episode"""
+    def get_episode_choice(self, all_episodes):
+        """Get user's choice of episode from all seasons"""
         try:
-            choice_input = input(f"Enter episode number (1-{len(episodes)}): ").strip()
+            choice_input = input(f"Enter episode number (1-{len(all_episodes)}): ").strip()
             
             choice = int(choice_input)
-            if 1 <= choice <= len(episodes):
-                return episodes[choice - 1]
+            if 1 <= choice <= len(all_episodes):
+                # Find the episode with the matching global number
+                for episode in all_episodes:
+                    if episode['global_number'] == choice:
+                        return episode
+                return None
             else:
                 print("Invalid choice!")
                 return None
@@ -414,23 +475,28 @@ def main():
     
     print(f"\n✅ Selected: {chosen_drama['title']}")
     
-    # Step 3: Scrape episodes
+    # Step 3: Scrape episodes by season
     print("\n🎬 Scraping episodes...")
-    episodes = scraper.scrape_episodes(chosen_drama['url'])
+    seasons = scraper.scrape_episodes(chosen_drama['url'])
     
-    if not episodes:
+    if not seasons:
         print("❌ No episodes found on the selected page.")
         return
     
-    # Step 4: Display episodes and get user choice
-    print("\n📺 Select episode...")
-    scraper.display_episodes(episodes)
-    chosen_episode = scraper.get_episode_choice(episodes)
+    # Step 4: Display seasons and episodes
+    print("\n📺 Available seasons and episodes...")
+    all_episodes = scraper.display_seasons_and_episodes(seasons)
+    
+    if not all_episodes:
+        print("❌ No episodes available.")
+        return
+    
+    chosen_episode = scraper.get_episode_choice(all_episodes)
     
     if not chosen_episode:
         return
     
-    print(f"\n✅ Selected: {chosen_episode['title']}")
+    print(f"\n✅ Selected: {chosen_episode['season']} - {chosen_episode['title']}")
     
     # Step 5: Extract and download
     print(f"\n💾 Processing download link...")
